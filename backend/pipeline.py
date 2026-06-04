@@ -1,68 +1,43 @@
 """
-pipeline.py — the core analysis pipeline.
+pipeline.py — orchestrates the analysis pipelines.
 
-Tuned for low token usage during development.
+Two entry points:
+  - run_analysis(content)         — text/PDF: Qwen → Gemini
+  - run_analysis_from_image(...)  — image: MiniCPM-V → Qwen → Gemini
+
+Both return ContentAnalysis. The two-vs-three stage difference is hidden
+from callers (api.py).
 """
 
-import os
-
-from google import genai
-from google.genai import types
-
+from model_manager import manager
+from pipeline_schemas import CompressedContent
+from pipelines.stage0_minicpm import run_stage0
+from pipelines.stage1_qwen import run_stage1
+from pipelines.stage2_gemini import run_stage2
 from schemas import ContentAnalysis
 
 
-# Input cap — protects API quota from huge inputs.
-# 8k chars ≈ 2k tokens. Plenty for an article or short chapter.
-# Bump this number once development is stable.
-MAX_INPUT_CHARS = 8_000
-
-# Output cap — hard ceiling on response size.
-# 1024 tokens is enough for our small structured output.
-MAX_OUTPUT_TOKENS = 1024
-
-
-PROMPT_TEMPLATE = """You analyze content to help readers ACT on what they read, not just remember it.
-
-Rules:
-- Be CONCISE. Short sentences. No filler.
-- Stick to the EXACT counts requested in the schema.
-- action_items: things to DO.
-- decisions_to_make: real CHOICES with tradeoffs.
-- questions_to_explore: open threads the content raises.
-
-Content:
----
-{content}
----
-
-Return only valid JSON matching the schema."""
-
-
 def run_analysis(content: str) -> ContentAnalysis:
-    """Send text content to Gemini and return a structured analysis."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set. Load it from .env first.")
+    """Text/PDF pipeline. Stage 1 (Qwen) → Stage 2 (Gemini)."""
+    manager.ensure_model("qwen")
+    pack: CompressedContent = run_stage1(content)
+    analysis: ContentAnalysis = run_stage2(pack)
+    return analysis
 
-    if not content.strip():
-        raise ValueError("Content is empty — nothing to analyze.")
 
-    if len(content) > MAX_INPUT_CHARS:
-        content = content[:MAX_INPUT_CHARS] + "\n\n[content truncated]"
+def run_analysis_from_image(
+    image_bytes: bytes,
+    filename: str,
+) -> ContentAnalysis:
+    """Image pipeline. Stage 0 (MiniCPM) → Stage 1 (Qwen) → Stage 2 (Gemini)."""
+    # Step 1 — load MiniCPM, get a text description.
+    manager.ensure_model("minicpm")
+    description = run_stage0(image_bytes, filename)
 
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=PROMPT_TEMPLATE.format(content=content),
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ContentAnalysis,
-            max_output_tokens=MAX_OUTPUT_TOKENS,
-        ),
-    )
-
-    if response.parsed is None:
-        raise RuntimeError("Gemini returned no parsed response.")
-
-    return response.parsed
+    # Step 2 — swap to Qwen, run normal text pipeline.
+    # We can't just call run_analysis() here because we'd swap to Qwen twice.
+    # The shared text-side logic is two lines, easier to repeat than refactor.
+    manager.ensure_model("qwen")
+    pack: CompressedContent = run_stage1(description)
+    analysis: ContentAnalysis = run_stage2(pack)
+    return analysis

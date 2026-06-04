@@ -1,10 +1,16 @@
 """
 api.py — FastAPI server exposing the analysis pipeline over HTTP.
 
-Now wired to PostgreSQL via SQLAlchemy. Each /analyze call writes a Job row.
+Routes:
+  POST /analyze     — accept text/PDF or image, run pipeline, return analysis + pdf_id
+  GET  /pdf/{id}    — return the PDF for a given pdf_id
+  GET  /jobs        — return the 20 most recent jobs
+  GET  /jobs/{id}   — return one full job by ID
+  GET  /health      — heartbeat
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -17,8 +23,9 @@ from sqlalchemy.orm import Session
 
 from db import get_db
 from extractor import extract_text_from_bytes
+from model_manager import manager
 from models import Job
-from pipeline import run_analysis
+from pipeline import run_analysis, run_analysis_from_image
 from renderer import render_to_pdf
 from schemas import ContentAnalysis
 
@@ -29,7 +36,22 @@ OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
-app = FastAPI(title="CallToAction API", version="0.2.0")
+# ────────── Lifecycle ──────────
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hooks. Cleanly stops llama-server when uvicorn exits."""
+    yield
+    print("Shutting down model manager...")
+    manager.shutdown()
+
+
+app = FastAPI(
+    title="Content Summarizer API",
+    version="0.3.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,12 +62,13 @@ app.add_middleware(
 )
 
 
-# ───── Response shapes ─────
+# ────────── Response shapes ──────────
 
 
 class AnalyzeResponse(BaseModel):
     analysis: ContentAnalysis
     pdf_id: str
+
 
 class JobSummary(BaseModel):
     """Lightweight job info for list views."""
@@ -54,13 +77,11 @@ class JobSummary(BaseModel):
     source_kind: str
     source_label: str
 
-    # Tells Pydantic it's allowed to read attributes from ORM objects,
-    # not just dicts. Otherwise it'd complain that Job isn't a dict.
     model_config = {"from_attributes": True}
 
 
 class JobDetail(BaseModel):
-    """Full job for detail view — same as JobSummary plus the analysis."""
+    """Full job for detail view."""
     id: str
     created_at: str
     source_kind: str
@@ -68,27 +89,22 @@ class JobDetail(BaseModel):
     analysis: ContentAnalysis
 
     model_config = {"from_attributes": True}
-# ───── Helpers ─────
 
 
-def _build_source_label(
-    files: list[UploadFile], text: Optional[str]
-) -> tuple[str, str]:
-    """Return (source_kind, source_label) for the Job row.
-
-    For files: comma-joined filenames, truncated to 500 chars.
-    For text: first 100 chars of the pasted content.
-    """
-    has_files = len(files) > 0 and any(f.filename for f in files)
-    if has_files:
-        names = [f.filename or "unnamed" for f in files]
-        label = ", ".join(names)[:500]
-        return "file", label
-    label = (text or "")[:100]
-    return "text", label
+# ────────── Helpers ──────────
 
 
-# ───── Endpoints ─────
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _file_extension(filename: Optional[str]) -> str:
+    """Return the lowercase extension including the dot, or empty string."""
+    if not filename or "." not in filename:
+        return ""
+    return "." + filename.rsplit(".", 1)[-1].lower()
+
+
+# ────────── Endpoints ──────────
 
 
 @app.get("/health")
@@ -103,8 +119,13 @@ async def analyze(
     text: Optional[str] = Form(default=None),
     db: Session = Depends(get_db),
 ) -> AnalyzeResponse:
-    """Run the analysis pipeline, save the PDF, and persist a Job row."""
-    # Validate input.
+    """Run the analysis pipeline, save the PDF, persist a Job row.
+
+    Routes:
+      - Image files (PNG/JPG/JPEG/WEBP/GIF) → image pipeline (MiniCPM → Qwen → Gemini)
+      - PDF/TXT files → text pipeline (Qwen → Gemini)
+      - Pasted text → text pipeline
+    """
     has_files = len(files) > 0 and any(f.filename for f in files)
     has_text = text is not None and text.strip() != ""
 
@@ -113,34 +134,57 @@ async def analyze(
     if has_files and has_text:
         raise HTTPException(400, "Provide files OR text, not both.")
 
-    # Extract content.
+    # Decide which pipeline to use, run it, and capture source metadata.
     try:
         if has_files:
-            parts = []
-            for upload in files:
-                data = await upload.read()
-                parts.append(
-                    extract_text_from_bytes(upload.filename or "file", data)
+            first = files[0]
+            first_ext = _file_extension(first.filename)
+
+            if first_ext in IMAGE_EXTENSIONS:
+                # Image pipeline. Only one image at a time.
+                if len(files) > 1:
+                    raise HTTPException(
+                        400, "Only one image at a time is supported."
+                    )
+                image_bytes = await first.read()
+                analysis = run_analysis_from_image(
+                    image_bytes, first.filename or "image"
                 )
-            content = "\n\n".join(parts)
+                source_kind = "image"
+                source_label = first.filename or "image"
+            else:
+                # Text/PDF pipeline. Concatenate all files.
+                parts = []
+                for upload in files:
+                    data = await upload.read()
+                    parts.append(
+                        extract_text_from_bytes(upload.filename or "file", data)
+                    )
+                content = "\n\n".join(parts)
+                analysis = run_analysis(content)
+                source_kind = "file"
+                source_label = ", ".join(
+                    [(f.filename or "unnamed") for f in files]
+                )[:500]
         else:
-            content = text or ""
+            # Pasted text pipeline.
+            analysis = run_analysis(text or "")
+            source_kind = "text"
+            source_label = (text or "")[:100]
     except ValueError as e:
         raise HTTPException(400, str(e))
-
-    # Run pipeline.
-    try:
-        analysis = run_analysis(content)
+    except HTTPException:
+        # Re-raise — these are intentional 4xx errors (like the multi-image guard).
+        raise
     except Exception as e:
         raise HTTPException(502, f"Analysis failed: {e}")
 
-    # Render PDF.
+    # Render PDF and assign an ID.
     pdf_id = uuid.uuid4()
     pdf_path = OUTPUT_DIR / f"{pdf_id}.pdf"
     render_to_pdf(analysis, pdf_path)
 
     # Persist a Job row.
-    source_kind, source_label = _build_source_label(files, text)
     job = Job(
         id=pdf_id,
         source_kind=source_kind,
@@ -162,16 +206,12 @@ def get_pdf(pdf_id: str, db: Session = Depends(get_db)) -> FileResponse:
     except ValueError:
         raise HTTPException(400, "Invalid pdf_id format.")
 
-    # Look up the job in the database.
-    # If it doesn't exist, the PDF doesn't either (regardless of disk state).
     job = db.query(Job).filter(Job.id == job_uuid).first()
     if job is None:
         raise HTTPException(404, "Job not found.")
 
     pdf_path = Path(job.pdf_path)
     if not pdf_path.exists():
-        # The DB has a record but the file is missing — disk and DB out of sync.
-        # 410 Gone is more accurate than 404 here.
         raise HTTPException(410, "PDF file no longer exists on disk.")
 
     return FileResponse(
@@ -179,7 +219,8 @@ def get_pdf(pdf_id: str, db: Session = Depends(get_db)) -> FileResponse:
         media_type="application/pdf",
         filename=f"summary-{pdf_id[:8]}.pdf",
     )
-    
+
+
 @app.get("/jobs", response_model=list[JobSummary])
 def list_jobs(db: Session = Depends(get_db)) -> list[JobSummary]:
     """Return the 20 most recent jobs, newest first."""

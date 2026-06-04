@@ -23,7 +23,7 @@ if not DATABASE_URL:
 # Engine = connection pool. SQLAlchemy reuses connections across sessions
 # automatically, so we just create one engine for the whole app.
 # echo=False keeps logs quiet; flip to True if you want to see every SQL query.
-engine = create_engine(DATABASE_URL, echo=False)
+engine = create_engine(DATABASE_URL, echo=True)
 
 
 # SessionLocal is a factory: SessionLocal() gives us a fresh Session.

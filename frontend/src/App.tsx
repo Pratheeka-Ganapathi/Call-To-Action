@@ -33,7 +33,9 @@ function App() {
   }, [])
 
   const canAnalyze =
-    activeTab === "file" ? files.length > 0 : pastedText.trim().length > 0
+    activeTab === "text"
+      ? pastedText.trim().length > 0
+      : files.length > 0
 
   async function handleAnalyze() {
     setIsLoading(true)
@@ -41,9 +43,9 @@ function App() {
     setResult(null)
     try {
       const input =
-        activeTab === "file" && files.length > 0
-          ? ({ kind: "file" as const, files })
-          : ({ kind: "text" as const, text: pastedText })
+        activeTab === "text"
+          ? ({ kind: "text" as const, text: pastedText })
+          : ({ kind: "file" as const, files })
       const response = await analyzeContent(input)
       setResult(response)
       const updated = await listJobs()
@@ -89,7 +91,7 @@ function App() {
       <div className="max-w-3xl mx-auto py-16 px-4 space-y-8 relative">
         <header className="space-y-3">
           <h1 className="text-5xl font-bold tracking-tight bg-gradient-to-r from-zinc-50 via-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-            CallToAction
+            Summarizer
           </h1>
           <div className="flex items-center gap-2">
             <div className="h-1 w-1 rounded-full bg-violet-400" />
@@ -115,9 +117,7 @@ function App() {
                 <TabsList className="grid w-full grid-cols-3 bg-zinc-900/60 border border-zinc-800/80">
                   <TabsTrigger value="file">PDF / Text file</TabsTrigger>
                   <TabsTrigger value="text">Paste text</TabsTrigger>
-                  <TabsTrigger value="image" disabled>
-                    Image
-                  </TabsTrigger>
+                  <TabsTrigger value="image">Image</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="file" className="pt-5">
@@ -139,9 +139,11 @@ function App() {
                 </TabsContent>
 
                 <TabsContent value="image" className="pt-5">
-                  <p className="text-zinc-500 text-sm">
-                    Image analysis coming soon.
-                  </p>
+                  <FileDropZone
+                    files={files}
+                    onFilesChange={setFiles}
+                    accept=".png,.jpg,.jpeg,.webp"
+                  />
                 </TabsContent>
               </Tabs>
 

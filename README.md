@@ -1,91 +1,122 @@
 # CallToAction
 
-> Read less. Act more.
+Turn a document, pasted text, or an image into a concise, action-oriented
+summary and a downloadable PDF. CallToAction runs content through a staged
+pipeline that compresses the source, extracts the key claims, and produces a
+structured analysis: a one-line main point, key takeaways, and a call to action
+with concrete next steps, decisions to make, and questions to explore.
 
-A full-stack app that turns an article or document into an action-oriented summary. Instead of only telling you what the content said, it gives you things to do: key takeaways, action items, decisions to make, and open questions, plus a downloadable PDF.
+The project has two parts:
 
-The repo has two parts:
-
-| Folder | What it is |
-| --- | --- |
-| `backend/` | Python FastAPI backend. Extracts text, runs a Gemini analysis pipeline, renders a PDF, and stores each run in Postgres. |
-| `frontend/` | React 19 + TypeScript + Vite single-page app. Upload/paste UI, recent-jobs list, results view, PDF download. |
+- `backend/` is a FastAPI backend that runs the analysis pipeline,
+  renders a PDF, and stores each run as a job in Postgres.
+- `frontend/` is a React + Vite + TypeScript single-page app for uploading
+  content and viewing results.
 
 ## How it works
 
-```
-Frontend (POST /analyze)
-   -> extractor.py   (PDF/TXT to plain text via PyMuPDF)
-   -> pipeline.py    (Gemini 2.5 Flash, structured JSON output)
-   -> schemas.py     (Pydantic models enforce the output shape)
-   -> renderer.py    (fpdf2 renders the analysis to a PDF)
-   -> Postgres       (a Job row is saved: source, analysis JSONB, pdf path)
-   -> response: { analysis, pdf_id }  ->  frontend renders + offers PDF download
-```
+The backend exposes an `/analyze` endpoint that accepts pasted text, a PDF or
+text file, or an image. Input is routed through a pipeline:
 
-The TypeScript types in `frontend/src/types/analysis.ts` mirror the Pydantic schemas in `backend/schemas.py`, so the API contract stays in sync.
+1. Text and PDF input goes to Qwen 2.5 (served locally through llama-server),
+   which compresses the source into a structured pack of claims and examples.
+2. Image input first goes to MiniCPM-V (also via llama-server) for a text
+   description, then follows the same Qwen path.
+3. The compressed pack is sent to Google Gemini, which returns the final
+   structured analysis.
+4. The analysis is rendered to a PDF and saved, and a job record is written to
+   the database.
 
-## Backend (`backend/`)
+A local `ModelManager` owns a single llama-server subprocess and swaps the
+loaded model on demand, so the same GPU can serve both the text and vision
+models without running them at once.
 
-Stack: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2.0, Alembic, PostgreSQL, Google Gemini (`google-genai`), PyMuPDF, fpdf2.
+## Tech stack
 
-### Setup
+**Backend** (`backend/`)
+
+- Python, FastAPI, Uvicorn
+- Pydantic for the structured output schema
+- PyMuPDF for PDF text extraction
+- Google GenAI SDK (Gemini) for the final analysis
+- Local llama-server (Qwen 2.5, MiniCPM-V) for compression and vision
+- SQLAlchemy and Alembic with PostgreSQL
+- fpdf2 for PDF rendering
+
+**Frontend** (`frontend/`)
+
+- React, Vite, TypeScript
+- Tailwind CSS and shadcn-style components
+- Radix UI primitives, lucide-react icons
+
+## API endpoints
+
+| Method | Path            | Description                                      |
+| ------ | --------------- | ------------------------------------------------ |
+| GET    | `/health`       | Heartbeat                                        |
+| POST   | `/analyze`      | Run the pipeline on text, a file, or an image    |
+| GET    | `/pdf/{pdf_id}` | Download the rendered PDF for a job              |
+| GET    | `/jobs`         | List the 20 most recent jobs                     |
+| GET    | `/jobs/{job_id}`| Fetch one full job by ID                         |
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.11 or newer
+- Node.js 18 or newer
+- PostgreSQL
+- A Google Gemini API key
+- Optional: a local llama-server build with the Qwen and MiniCPM-V models, for
+  the text-compression and image stages
+
+### Backend
 
 ```bash
 cd backend
-
-# 1. Virtual env + deps
 python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+# Windows: venv\Scripts\activate
+# macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Environment
 cp .env.example .env
-# then edit .env and set GEMINI_API_KEY and DATABASE_URL
+# edit .env and set GEMINI_API_KEY and DATABASE_URL
 
-# 3. Database (Postgres must be running)
 alembic upgrade head
-
-# 4. Run the API
-uvicorn api:app --reload --port 8000
+uvicorn api:app --reload
 ```
 
-`.env` keys:
+The API starts on http://localhost:8000.
 
-```
-GEMINI_API_KEY=your-gemini-api-key-here
-DATABASE_URL=postgresql://postgres:password@localhost:5432/summarizer
-```
-
-### Endpoints
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health` | Heartbeat |
-| `POST` | `/analyze` | Upload files or text, returns analysis + `pdf_id` |
-| `GET` | `/pdf/{id}` | Download the rendered PDF |
-| `GET` | `/jobs` | 20 most recent jobs |
-| `GET` | `/jobs/{id}` | One full job |
-
-### CLI (no server needed)
-
-```bash
-python summarize.py sample_content.txt -o out.pdf
-```
-
-## Frontend (`frontend/`)
-
-Stack: React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui (radix-nova).
+### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173
+npm run dev
 ```
 
-The dev server expects the backend at `http://localhost:8000` (set in `src/lib/api/real.ts`). CORS on the backend is open to `localhost:5173`.
+The app starts on http://localhost:5173 and expects the API on port 8000.
+
+## Configuration
+
+The backend reads configuration from `backend/.env`. Use
+`.env.example` as a template:
+
+- `GEMINI_API_KEY` is required for the final analysis stage.
+- `DATABASE_URL` is the PostgreSQL connection string.
+
+The paths to the local llama-server executable and model files are set in
+`backend/model_manager.py`. Adjust them to match your machine if you
+want to run the Qwen and MiniCPM-V stages. If llama-server is not available, the
+text stages will not run.
 
 ## Project status
 
-Built in modules. Working today: text/PDF upload, Gemini analysis, PDF generation, job history. Planned next: WeasyPrint + Jinja2 templated rendering, image/OCR input, and object storage for PDFs.
+This is a single-user, localhost project with no authentication. Some pieces
+are scaffolding rather than finished features, including the local model server
+wiring and automated tests. Treat it as a working prototype.
 
+## License
+
+Released under the MIT License. See [LICENSE](LICENSE).
