@@ -1,0 +1,9 @@
+The Jobs-to-be-Done Framework
+
+When products succeed, it's rarely because the features were best-in-class. It's because the product reliably did a "job" the customer was trying to get done. A milkshake, for example, competes not with other milkshakes but with bananas, coffee, and bagels — anything that solves the morning-commute job of "something to eat one-handed that holds me until lunch."
+
+This reframing matters because traditional market research asks what customers want in the abstract. They list features. But features rarely cause purchases; jobs do. A customer doesn't wake up wanting a quarter-inch drill — they want a quarter-inch hole in their wall so they can hang a photograph so their living room feels more personal.
+
+Three practical consequences follow. First, competition is bigger than you think: anything that also does the job competes, including the option of "doing nothing." Second, new features are only valuable if they help the job get done better, faster, or more reliably. Third, customer interviews should ask about jobs, not preferences: "walk me through the last time you tried to hire something to do this job" reveals far more than "what do you think of our product?"
+
+The practical test is simple. Can you describe your product's core job in one sentence, starting with a verb? "Helps parents feed their toddler without a fight" passes. "A family nutrition app" fails — it's a category, not a job.

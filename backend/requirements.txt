@@ -1,0 +1,11 @@
+google-genai
+python-dotenv
+pydantic
+pymupdf
+fpdf2
+fastapi
+uvicorn[standard]
+python-multipart
+sqlalchemy
+alembic
+psycopg2-binary
