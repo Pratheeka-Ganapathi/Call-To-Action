@@ -89,8 +89,3 @@ The dev server expects the backend at `http://localhost:8000` (set in `src/lib/a
 
 Built in modules. Working today: text/PDF upload, Gemini analysis, PDF generation, job history. Planned next: WeasyPrint + Jinja2 templated rendering, image/OCR input, and object storage for PDFs.
 
-## Notes
-
-- Never commit `.env`. It holds your API key. Copy `.env.example` instead.
-- `backend/output/` holds generated PDFs at runtime and is gitignored.
-- No authentication yet. Intended for local, single-user development.
